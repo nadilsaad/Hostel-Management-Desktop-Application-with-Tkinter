@@ -7,7 +7,7 @@ class Database:
         self.conn = psycopg2.connect(
             os.getenv(
                 "DATABASE_URL",
-                "postgresql://username:password@ep-xxxx-pooler.region.aws.neon.tech/neondb?sslmode=require"
+                "postgresql://neondb_owner:npg_GUeSt9TB7OKf@ep-cold-flower-alfabfxz-pooler.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
             )
         )
         self.cursor = self.conn.cursor()
