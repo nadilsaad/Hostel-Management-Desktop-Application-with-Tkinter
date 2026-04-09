@@ -17,13 +17,16 @@ class HMSApp:
         root.title("Hostel Management System")
         root.geometry("760x450")
 
-        tk.Label(root, text="HOSTEL MANAGEMENT SYSTEM", font=("Arial", 18, "bold")).pack(pady=20)
+        tk.Label(
+            root,
+            text="HOSTEL MANAGEMENT SYSTEM",
+            font=("Arial", 18, "bold")
+        ).pack(pady=20)
 
         tk.Button(root, text="Manage Students", width=25, command=self.student_window).pack(pady=6)
         tk.Button(root, text="Manage Rooms", width=25, command=self.room_window).pack(pady=6)
         tk.Button(root, text="Make Payment & Allocate Room", width=30, command=self.payment_window).pack(pady=6)
 
-        # optional: process expired allocations when app starts
         self.process_expired_allocations(silent=True)
 
     # ================= STUDENTS =================
@@ -91,52 +94,62 @@ class HMSApp:
 
     # ================= EXPIRED ALLOCATIONS =================
     def process_expired_allocations(self, silent=False):
-        """
-        Deallocates students whose allocation endDate is past/current date.
-        - Deletes allocation
-        - Decreases room occupied
-        - Updates room status
-        """
         try:
-            # get all expired allocations
             self.db.cursor.execute("""
                 SELECT allocationId, roomId
                 FROM allocations
-                WHERE datetime(endDate) <= datetime('now')
+                WHERE endDate <= NOW()
             """)
             expired = self.db.cursor.fetchall()
+
             if not expired:
                 if not silent:
                     messagebox.showinfo("Expired", "No expired allocations found.")
                 return
 
-            for allocationId, roomId in expired:
-                # delete allocation
-                self.db.cursor.execute("DELETE FROM allocations WHERE allocationId=?", (allocationId,))
+            for allocation_id, room_id in expired:
+                self.db.cursor.execute(
+                    "DELETE FROM allocations WHERE allocationId = %s",
+                    (allocation_id,)
+                )
 
-                # decrease occupied
                 self.db.cursor.execute("""
                     UPDATE rooms
-                    SET occupied = CASE WHEN occupied > 0 THEN occupied - 1 ELSE 0 END
-                    WHERE roomId=?
-                """, (roomId,))
+                    SET occupied = CASE
+                        WHEN occupied > 0 THEN occupied - 1
+                        ELSE 0
+                    END
+                    WHERE roomId = %s
+                """, (room_id,))
 
-                # update status
-                self.db.cursor.execute("SELECT occupied, capacity FROM rooms WHERE roomId=?", (roomId,))
-                occ, cap = self.db.cursor.fetchone()
-                status = "Full" if int(occ) >= int(cap) else "Available"
-                self.db.cursor.execute("UPDATE rooms SET roomStatus=? WHERE roomId=?", (status, roomId))
+                self.db.cursor.execute(
+                    "SELECT occupied, capacity FROM rooms WHERE roomId = %s",
+                    (room_id,)
+                )
+                room_data = self.db.cursor.fetchone()
+
+                if room_data:
+                    occ, cap = room_data
+                    status = "Full" if int(occ) >= int(cap) else "Available"
+                    self.db.cursor.execute(
+                        "UPDATE rooms SET roomStatus = %s WHERE roomId = %s",
+                        (status, room_id)
+                    )
 
             self.db.conn.commit()
 
             if not silent:
-                messagebox.showinfo("Expired", f"Processed {len(expired)} expired allocations successfully.")
+                messagebox.showinfo(
+                    "Expired",
+                    f"Processed {len(expired)} expired allocations successfully."
+                )
 
         except Exception as e:
+            self.db.conn.rollback()
             if not silent:
                 messagebox.showerror("Error", f"Failed processing expired: {e}")
 
-    # ================= ROOMS (TABS) =================
+    # ================= ROOMS =================
     def room_window(self):
         win = tk.Toplevel(self.root)
         win.title("Manage Rooms")
@@ -154,8 +167,6 @@ class HMSApp:
         totals_lbl = tk.Label(top, text="", font=("Arial", 10, "bold"))
         totals_lbl.pack(side="right")
 
-        ttk.Button(top, text="Process Expired Allocations", command=lambda: self._process_and_refresh(hostel_filter, totals_lbl)).pack(side="right", padx=10)
-
         notebook = ttk.Notebook(win)
         notebook.pack(fill="both", expand=True, padx=10, pady=8)
 
@@ -167,7 +178,6 @@ class HMSApp:
         notebook.add(tab_students, text="Room Students")
         notebook.add(tab_add, text="Add Room")
 
-        # ---------- Rooms table ----------
         rooms_container = ttk.Frame(tab_rooms)
         rooms_container.pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -193,7 +203,6 @@ class HMSApp:
         roomsTree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        # ---------- Students in selected room ----------
         stud_container = ttk.Frame(tab_students)
         stud_container.pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -237,70 +246,98 @@ class HMSApp:
             ht = hostel_filter.get().strip()
             self.db.cursor.execute("""
                 SELECT
-                  SUM(CASE WHEN p.period='Semester' THEN p.amount ELSE 0 END) AS sem_total,
-                  SUM(CASE WHEN p.period='Year' THEN p.amount ELSE 0 END) AS year_total
+                    COALESCE(SUM(CASE WHEN p.period = 'Semester' THEN p.amount ELSE 0 END), 0) AS sem_total,
+                    COALESCE(SUM(CASE WHEN p.period = 'Year' THEN p.amount ELSE 0 END), 0) AS year_total
                 FROM payments p
                 JOIN allocations a ON a.studentId = p.studentId
                 JOIN rooms r ON r.roomId = a.roomId
-                WHERE LOWER(r.hostelType)=LOWER(?)
+                WHERE LOWER(r.hostelType) = LOWER(%s)
             """, (ht,))
             row = self.db.cursor.fetchone()
-            sem_total = row[0] if row and row[0] is not None else 0
-            year_total = row[1] if row and row[1] is not None else 0
+            sem_total = row[0] if row else 0
+            year_total = row[1] if row else 0
             totals_lbl.config(text=f"Totals: Semester {int(sem_total)} | Year {int(year_total)}")
 
         def load_rooms():
             clear_rooms()
-            ht = hostel_filter.get().strip()
+            clear_students()
 
+            ht = hostel_filter.get().strip()
             self.db.cursor.execute("""
                 SELECT roomId, roomNumber, capacity, occupied, roomStatus
                 FROM rooms
-                WHERE LOWER(hostelType)=LOWER(?)
+                WHERE LOWER(hostelType) = LOWER(%s)
                 ORDER BY roomNumber
             """, (ht,))
             for row in self.db.cursor.fetchall():
                 roomsTree.insert("", "end", values=row)
 
             update_totals()
-            clear_students()
 
-        def load_room_students(roomId: int):
+        def load_room_students(room_id):
             clear_students()
             self.db.cursor.execute("""
-                SELECT s.studentId, s.name, s.registrationNumber,
-                       COALESCE(p.period, 'N/A') AS period,
-                       COALESCE(p.amount, 0) AS amount,
-                       a.endDate,
-                       CAST((julianday(a.endDate) - julianday('now')) AS INTEGER) AS daysLeft
+                SELECT
+                    s.studentId,
+                    s.name,
+                    s.registrationNumber,
+                    COALESCE(p.period, 'N/A') AS period,
+                    COALESCE(p.amount, 0) AS amount,
+                    a.endDate,
+                    GREATEST(0, DATE_PART('day', a.endDate - NOW()))::int AS daysLeft
                 FROM allocations a
                 JOIN students s ON s.studentId = a.studentId
-                LEFT JOIN payments p ON p.paymentId = (
-                    SELECT paymentId FROM payments
+                LEFT JOIN LATERAL (
+                    SELECT period, amount
+                    FROM payments
                     WHERE studentId = s.studentId
                     ORDER BY paymentDate DESC
                     LIMIT 1
-                )
-                WHERE a.roomId=?
+                ) p ON TRUE
+                WHERE a.roomId = %s
                 ORDER BY s.studentId
-            """, (roomId,))
+            """, (room_id,))
             for row in self.db.cursor.fetchall():
                 occTree.insert("", "end", values=row)
 
         def on_room_select(_=None):
-            sel = roomsTree.selection()
-            if not sel:
+            selected = roomsTree.selection()
+            if not selected:
                 return
-            roomId = roomsTree.item(sel[0])["values"][0]
-            load_room_students(roomId)
+            room_id = roomsTree.item(selected[0])["values"][0]
+            load_room_students(room_id)
             notebook.select(tab_students)
 
         roomsTree.bind("<<TreeviewSelect>>", on_room_select)
 
-        # Manual deallocate
+        def refresh_all():
+            current_room_id = None
+            selected = roomsTree.selection()
+            if selected:
+                current_room_id = roomsTree.item(selected[0])["values"][0]
+
+            self.process_expired_allocations(silent=True)
+            load_rooms()
+
+            if current_room_id:
+                for item in roomsTree.get_children():
+                    values = roomsTree.item(item)["values"]
+                    if values and values[0] == current_room_id:
+                        roomsTree.selection_set(item)
+                        roomsTree.focus(item)
+                        load_room_students(current_room_id)
+                        break
+
+        ttk.Button(
+            top,
+            text="Process Expired Allocations",
+            command=refresh_all
+        ).pack(side="right", padx=10)
+
         def deallocate_student():
             sel_room = roomsTree.selection()
             sel_student = occTree.selection()
+
             if not sel_room:
                 messagebox.showerror("Error", "Select a room first (Rooms tab).")
                 return
@@ -308,31 +345,53 @@ class HMSApp:
                 messagebox.showerror("Error", "Select a student from the list.")
                 return
 
-            roomId = roomsTree.item(sel_room[0])["values"][0]
-            studentId = occTree.item(sel_student[0])["values"][0]
+            room_id = roomsTree.item(sel_room[0])["values"][0]
+            student_id = occTree.item(sel_student[0])["values"][0]
 
             try:
-                self.db.cursor.execute("DELETE FROM allocations WHERE studentId=? AND roomId=?", (studentId, roomId))
+                self.db.cursor.execute(
+                    "DELETE FROM allocations WHERE studentId = %s AND roomId = %s",
+                    (student_id, room_id)
+                )
+
                 self.db.cursor.execute("""
                     UPDATE rooms
-                    SET occupied = CASE WHEN occupied > 0 THEN occupied - 1 ELSE 0 END
-                    WHERE roomId=?
-                """, (roomId,))
-                self.db.cursor.execute("SELECT occupied, capacity FROM rooms WHERE roomId=?", (roomId,))
-                occ, cap = self.db.cursor.fetchone()
-                status = "Full" if int(occ) >= int(cap) else "Available"
-                self.db.cursor.execute("UPDATE rooms SET roomStatus=? WHERE roomId=?", (status, roomId))
-                self.db.conn.commit()
+                    SET occupied = CASE
+                        WHEN occupied > 0 THEN occupied - 1
+                        ELSE 0
+                    END
+                    WHERE roomId = %s
+                """, (room_id,))
 
+                self.db.cursor.execute(
+                    "SELECT occupied, capacity FROM rooms WHERE roomId = %s",
+                    (room_id,)
+                )
+                room_data = self.db.cursor.fetchone()
+
+                if room_data:
+                    occ, cap = room_data
+                    status = "Full" if int(occ) >= int(cap) else "Available"
+                    self.db.cursor.execute(
+                        "UPDATE rooms SET roomStatus = %s WHERE roomId = %s",
+                        (status, room_id)
+                    )
+
+                self.db.conn.commit()
                 messagebox.showinfo("Success", "Student deallocated successfully.")
                 load_rooms()
-                load_room_students(roomId)
+                load_room_students(room_id)
+
             except Exception as e:
+                self.db.conn.rollback()
                 messagebox.showerror("Error", f"Failed: {e}")
 
-        ttk.Button(tab_students, text="Deallocate Selected Student", command=deallocate_student).pack(pady=10, padx=6, anchor="w")
+        ttk.Button(
+            tab_students,
+            text="Deallocate Selected Student",
+            command=deallocate_student
+        ).pack(pady=10, padx=6, anchor="w")
 
-        # ---------- ADD ROOM TAB ----------
         addf = ttk.LabelFrame(tab_add, text="Add New Room")
         addf.pack(fill="x", padx=10, pady=14)
 
@@ -369,10 +428,13 @@ class HMSApp:
                 return
 
             self.db.cursor.execute("""
-                SELECT 1 FROM rooms
-                WHERE roomNumber=? AND LOWER(hostelType)=LOWER(?)
+                SELECT 1
+                FROM rooms
+                WHERE roomNumber = %s
+                  AND LOWER(hostelType) = LOWER(%s)
                 LIMIT 1
             """, (rn_i, ht))
+
             if self.db.cursor.fetchone():
                 messagebox.showerror("Error", f"Room {rn_i} already exists in {ht} hostel.")
                 return
@@ -380,7 +442,7 @@ class HMSApp:
             try:
                 self.db.cursor.execute("""
                     INSERT INTO rooms (roomNumber, capacity, hostelType, occupied, roomStatus)
-                    VALUES (?, ?, ?, 0, 'Available')
+                    VALUES (%s, %s, %s, 0, 'Available')
                 """, (rn_i, cap_i, ht))
                 self.db.conn.commit()
 
@@ -392,7 +454,9 @@ class HMSApp:
                 hostel_filter.set(ht)
                 load_rooms()
                 notebook.select(tab_rooms)
+
             except Exception as e:
+                self.db.conn.rollback()
                 messagebox.showerror("Error", f"Failed to add room: {e}")
 
         ttk.Button(addf, text="Add Room", command=add_room).grid(row=2, column=0, columnspan=4, pady=12)
@@ -400,14 +464,7 @@ class HMSApp:
         hostel_filter.bind("<<ComboboxSelected>>", lambda e: load_rooms())
         load_rooms()
 
-    def _process_and_refresh(self, hostel_filter, totals_lbl):
-        self.process_expired_allocations(silent=False)
-        # totals will update when rooms reload (user can press Manage Rooms again or switch hostel)
-        # Not forcing reload here because we don't have access to the internal tree.
-        # User can click hostel dropdown or reopen window.
-
     # ================= PAYMENT =================
-
     def payment_window(self):
         win = tk.Toplevel(self.root)
         win.title("Payment & Allocation")
@@ -416,12 +473,10 @@ class HMSApp:
         frm = ttk.LabelFrame(win, text="Payment & Allocation")
         frm.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ✅ Search by Registration Number (NOT ID)
         tk.Label(frm, text="Registration Number").grid(row=0, column=0, padx=6, pady=8, sticky="w")
         reg_entry = tk.Entry(frm, width=30)
         reg_entry.grid(row=0, column=1, padx=6, pady=8)
 
-        # This will hold the actual studentId after search
         student_id_var = tk.StringVar(value="")
 
         found_lbl = tk.Label(frm, text="Student: (not selected)", font=("Arial", 10, "bold"))
@@ -450,7 +505,7 @@ class HMSApp:
         expiry_lbl = tk.Label(frm, text="", font=("Arial", 10, "bold"))
         expiry_lbl.grid(row=7, column=0, columnspan=2, pady=6)
 
-        payment_room_map = {}  # label -> roomId
+        payment_room_map = {}
 
         def update_price_and_expiry(*_):
             p = period_box.get().strip()
@@ -463,7 +518,6 @@ class HMSApp:
         update_price_and_expiry()
 
         def load_rooms_for_student(student_id, hostel_type, student_name, gender):
-            # auto-remove expired before loading availability
             self.process_expired_allocations(silent=True)
 
             info_lbl.config(text=f"Student: {student_name} | Gender: {gender} | Hostel: {hostel_type}")
@@ -471,7 +525,7 @@ class HMSApp:
             self.db.cursor.execute("""
                 SELECT roomId, roomNumber
                 FROM rooms
-                WHERE LOWER(hostelType)=LOWER(?)
+                WHERE LOWER(hostelType) = LOWER(%s)
                   AND occupied < capacity
                 ORDER BY roomNumber
             """, (hostel_type,))
@@ -479,6 +533,7 @@ class HMSApp:
 
             payment_room_map.clear()
             labels = []
+
             for rid, rno in rows:
                 label = f"{rno} (ID:{rid})"
                 labels.append(label)
@@ -500,7 +555,7 @@ class HMSApp:
             self.db.cursor.execute("""
                 SELECT studentId, name, gender
                 FROM students
-                WHERE registrationNumber=?
+                WHERE registrationNumber = %s
             """, (reg,))
             st = self.db.cursor.fetchone()
 
@@ -520,12 +575,9 @@ class HMSApp:
 
             student_id_var.set(str(sid))
             found_lbl.config(text=f"Student: {name} (ID: {sid}) | RegNo: {reg}")
-
-            # Load rooms for this student
             load_rooms_for_student(sid, hostel_type, name, gender)
 
-        ttk.Button(frm, text="Search Student", command=search_student)\
-            .grid(row=0, column=2, padx=10, pady=8)
+        ttk.Button(frm, text="Search Student", command=search_student).grid(row=0, column=2, padx=10, pady=8)
 
         def submit_payment_allocate():
             sid = student_id_var.get().strip()
@@ -545,35 +597,43 @@ class HMSApp:
                 messagebox.showerror("Error", "Invalid room selection. Click Search Student again.")
                 return
 
-            # Prevent duplicate allocation (active)
-            self.db.cursor.execute("SELECT 1 FROM allocations WHERE studentId=? LIMIT 1", (sid,))
+            self.db.cursor.execute(
+                "SELECT 1 FROM allocations WHERE studentId = %s LIMIT 1",
+                (sid,)
+            )
             if self.db.cursor.fetchone():
                 messagebox.showerror("Error", "This student is already allocated to a room.")
                 return
 
-            roomId = payment_room_map[room_label]
+            room_id = payment_room_map[room_label]
             amount_required = SEMESTER_PRICE if period == "Semester" else YEAR_PRICE
 
-            # Gender check
-            self.db.cursor.execute("SELECT gender FROM students WHERE studentId=?", (sid,))
+            self.db.cursor.execute(
+                "SELECT gender FROM students WHERE studentId = %s",
+                (sid,)
+            )
             st = self.db.cursor.fetchone()
             if not st:
                 messagebox.showerror("Error", "Student not found")
                 return
 
-            studentGender = (st[0] or "").strip().upper()
-            expected_hostel = "Male" if studentGender == "M" else "Female"
+            student_gender = (st[0] or "").strip().upper()
+            expected_hostel = "Male" if student_gender == "M" else "Female"
 
-            # Room details
-            self.db.cursor.execute("SELECT hostelType, occupied, capacity FROM rooms WHERE roomId=?", (roomId,))
+            self.db.cursor.execute("""
+                SELECT hostelType, occupied, capacity
+                FROM rooms
+                WHERE roomId = %s
+            """, (room_id,))
             room = self.db.cursor.fetchone()
+
             if not room:
                 messagebox.showerror("Error", "Room not found")
                 return
 
-            roomHostelType, occupied, capacity = room
+            room_hostel_type, occupied, capacity = room
 
-            if str(roomHostelType).strip().lower() != expected_hostel.lower():
+            if str(room_hostel_type).strip().lower() != expected_hostel.lower():
                 messagebox.showerror("Error", "Gender mismatch! Student cannot be allocated to this hostel.")
                 return
 
@@ -581,39 +641,50 @@ class HMSApp:
                 messagebox.showerror("Error", "Room is full!")
                 return
 
-            # expiry calc: semester = +6 months, year = +12 months
-            end_expr = "datetime('now', '+6 months')" if period == "Semester" else "datetime('now', '+12 months')"
-
             try:
-                # Payment
                 self.db.cursor.execute("""
-                    INSERT INTO payments(studentId, amount, period, paymentDate, paymentMethod, paymentStatus)
-                    VALUES (?, ?, ?, datetime('now'), ?, 'Completed')
+                    INSERT INTO payments (studentId, amount, period, paymentDate, paymentMethod, paymentStatus)
+                    VALUES (%s, %s, %s, NOW(), %s, 'Completed')
                 """, (sid, amount_required, period, method))
 
-                # Allocation with endDate
-                self.db.cursor.execute(f"""
-                    INSERT INTO allocations(studentId, roomId, allocationDate, endDate)
-                    VALUES (?, ?, datetime('now'), {end_expr})
-                """, (sid, roomId))
+                if period == "Semester":
+                    self.db.cursor.execute("""
+                        INSERT INTO allocations (studentId, roomId, allocationDate, endDate)
+                        VALUES (%s, %s, NOW(), NOW() + INTERVAL '6 months')
+                    """, (sid, room_id))
+                else:
+                    self.db.cursor.execute("""
+                        INSERT INTO allocations (studentId, roomId, allocationDate, endDate)
+                        VALUES (%s, %s, NOW(), NOW() + INTERVAL '12 months')
+                    """, (sid, room_id))
 
-                # Update room occupancy + status
-                self.db.cursor.execute("UPDATE rooms SET occupied = occupied + 1 WHERE roomId=?", (roomId,))
+                self.db.cursor.execute("""
+                    UPDATE rooms
+                    SET occupied = occupied + 1
+                    WHERE roomId = %s
+                """, (room_id,))
+
                 new_occ = int(occupied) + 1
                 status = "Full" if new_occ >= int(capacity) else "Available"
-                self.db.cursor.execute("UPDATE rooms SET roomStatus=? WHERE roomId=?", (status, roomId))
+
+                self.db.cursor.execute("""
+                    UPDATE rooms
+                    SET roomStatus = %s
+                    WHERE roomId = %s
+                """, (status, room_id))
 
                 self.db.conn.commit()
                 messagebox.showinfo("Success", f"Payment ({period}) recorded and room allocated successfully!")
 
-                # Reset minimal fields
                 room_box.set("")
                 payment_room_map.clear()
 
             except Exception as e:
+                self.db.conn.rollback()
                 messagebox.showerror("Error", f"Failed: {e}")
 
         ttk.Button(win, text="Submit Payment & Allocate", command=submit_payment_allocate).pack(pady=10)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
