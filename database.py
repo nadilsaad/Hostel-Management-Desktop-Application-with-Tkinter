@@ -1,15 +1,22 @@
-import sqlite3
+import os
+import psycopg2
+
 
 class Database:
     def __init__(self):
-        self.conn = sqlite3.connect("hms.db")
+        self.conn = psycopg2.connect(
+            os.getenv(
+                "DATABASE_URL",
+                "postgresql://username:password@ep-xxxx-pooler.region.aws.neon.tech/neondb?sslmode=require"
+            )
+        )
         self.cursor = self.conn.cursor()
         self.create_tables()
 
     def create_tables(self):
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS students(
-            studentId INTEGER PRIMARY KEY AUTOINCREMENT,
+            studentId SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             phone TEXT,
             registrationNumber TEXT UNIQUE,
@@ -17,10 +24,9 @@ class Database:
         )
         """)
 
-        # roomId is PK; roomNumber can repeat across Male/Female
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS rooms(
-            roomId INTEGER PRIMARY KEY AUTOINCREMENT,
+            roomId SERIAL PRIMARY KEY,
             roomNumber INTEGER NOT NULL,
             capacity INTEGER NOT NULL,
             hostelType TEXT NOT NULL CHECK(hostelType IN ('Male','Female')),
@@ -30,31 +36,61 @@ class Database:
         )
         """)
 
-        # ✅ endDate added (expiry date)
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS allocations(
-            allocationId INTEGER PRIMARY KEY AUTOINCREMENT,
+            allocationId SERIAL PRIMARY KEY,
             studentId INTEGER NOT NULL,
             roomId INTEGER NOT NULL,
             allocationDate TEXT NOT NULL,
             endDate TEXT NOT NULL,
-            FOREIGN KEY(studentId) REFERENCES students(studentId),
-            FOREIGN KEY(roomId) REFERENCES rooms(roomId)
+            FOREIGN KEY(studentId) REFERENCES students(studentId) ON DELETE CASCADE,
+            FOREIGN KEY(roomId) REFERENCES rooms(roomId) ON DELETE CASCADE
         )
         """)
 
-        # payments include period
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS payments(
-            paymentId INTEGER PRIMARY KEY AUTOINCREMENT,
+            paymentId SERIAL PRIMARY KEY,
             studentId INTEGER NOT NULL,
             amount REAL NOT NULL,
             period TEXT NOT NULL CHECK(period IN ('Semester','Year')),
             paymentDate TEXT NOT NULL,
             paymentMethod TEXT,
             paymentStatus TEXT DEFAULT 'Completed',
-            FOREIGN KEY(studentId) REFERENCES students(studentId)
+            FOREIGN KEY(studentId) REFERENCES students(studentId) ON DELETE CASCADE
         )
         """)
 
         self.conn.commit()
+
+    def execute_query(self, query, params=None):
+        try:
+            self.cursor.execute(query, params or ())
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print("Query Error:", e)
+            self.conn.rollback()
+            return False
+
+    def fetch_all(self, query, params=None):
+        try:
+            self.cursor.execute(query, params or ())
+            return self.cursor.fetchall()
+        except Exception as e:
+            print("Fetch Error:", e)
+            return []
+
+    def fetch_one(self, query, params=None):
+        try:
+            self.cursor.execute(query, params or ())
+            return self.cursor.fetchone()
+        except Exception as e:
+            print("Fetch One Error:", e)
+            return None
+
+    def close(self):
+        if self.cursor:
+            self.cursor.close()
+        if self.conn:
+            self.conn.close()
