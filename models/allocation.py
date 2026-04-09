@@ -2,114 +2,62 @@ class RoomAllocation:
     def __init__(self, db):
         self.db = db
 
-    def allocate_if_paid(self, studentId, roomId):
+    def process_expired_allocations(self):
         try:
-            # Check student exists
             self.db.cursor.execute("""
-                SELECT gender
-                FROM students
-                WHERE studentId = %s
-            """, (studentId,))
-            student = self.db.cursor.fetchone()
-
-            if not student:
-                return "Student not found"
-
-            student_gender = (student[0] or "").strip().upper()
-
-            # Check latest payment
-            self.db.cursor.execute("""
-                SELECT amount, period
-                FROM payments
-                WHERE studentId = %s
-                ORDER BY paymentDate DESC
-                LIMIT 1
-            """, (studentId,))
-            payment = self.db.cursor.fetchone()
-
-            if not payment:
-                return "No payment found"
-
-            amount, period = payment
-
-            # Determine required fee
-            if period == "Semester":
-                required_fee = 120000
-                interval_value = "6 months"
-            elif period == "Year":
-                required_fee = 140000
-                interval_value = "12 months"
-            else:
-                return "Invalid payment period"
-
-            if float(amount) < float(required_fee):
-                return "Payment Not Enough"
-
-            # Prevent duplicate allocation
-            self.db.cursor.execute("""
-                SELECT 1
+                SELECT allocationId, roomId
                 FROM allocations
-                WHERE studentId = %s
-                LIMIT 1
-            """, (studentId,))
-            if self.db.cursor.fetchone():
-                return "Student already allocated"
+                WHERE endDate <= NOW()
+            """)
+            expired = self.db.cursor.fetchall()
 
-            # Get room details
-            self.db.cursor.execute("""
-                SELECT roomId, hostelType, capacity, occupied
-                FROM rooms
-                WHERE roomId = %s
-            """, (roomId,))
-            room = self.db.cursor.fetchone()
+            count = 0
+            for allocation_id, room_id in expired:
+                self.db.cursor.execute("""
+                    DELETE FROM allocations
+                    WHERE allocationId = %s
+                """, (allocation_id,))
 
-            if not room:
-                return "Room not found"
+                self.db.cursor.execute("""
+                    UPDATE rooms
+                    SET occupied = CASE
+                        WHEN occupied > 0 THEN occupied - 1
+                        ELSE 0
+                    END
+                    WHERE roomId = %s
+                """, (room_id,))
 
-            room_id, hostel_type, capacity, occupied = room
+                self.db.cursor.execute("""
+                    SELECT occupied, capacity
+                    FROM rooms
+                    WHERE roomId = %s
+                """, (room_id,))
+                room = self.db.cursor.fetchone()
 
-            expected_hostel = "Male" if student_gender == "M" else "Female"
-            if str(hostel_type).strip().lower() != expected_hostel.lower():
-                return "Gender mismatch"
+                if room:
+                    occupied, capacity = room
+                    status = "Full" if int(occupied) >= int(capacity) else "Available"
+                    self.db.cursor.execute("""
+                        UPDATE rooms
+                        SET roomStatus = %s
+                        WHERE roomId = %s
+                    """, (status, room_id))
 
-            if int(occupied) >= int(capacity):
-                return "Room is Full"
-
-            # Insert allocation
-            self.db.cursor.execute(f"""
-                INSERT INTO allocations(studentId, roomId, allocationDate, endDate)
-                VALUES (%s, %s, NOW(), NOW() + INTERVAL '{interval_value}')
-            """, (studentId, room_id))
-
-            # Update room occupancy
-            self.db.cursor.execute("""
-                UPDATE rooms
-                SET occupied = occupied + 1
-                WHERE roomId = %s
-            """, (room_id,))
-
-            # Update room status
-            new_status = "Full" if int(occupied) + 1 >= int(capacity) else "Available"
-            self.db.cursor.execute("""
-                UPDATE rooms
-                SET roomStatus = %s
-                WHERE roomId = %s
-            """, (new_status, room_id))
+                count += 1
 
             self.db.conn.commit()
-            return "Student Fully Allocated"
-
+            return True, count
         except Exception as e:
             self.db.conn.rollback()
-            print("Allocation error:", e)
-            return f"Error: {e}"
+            print("Process expired allocations error:", e)
+            return False, 0
 
-    def deallocate_student(self, studentId, roomId):
+    def deallocate_student(self, student_id, room_id):
         try:
             self.db.cursor.execute("""
                 DELETE FROM allocations
                 WHERE studentId = %s AND roomId = %s
-            """, (studentId, roomId))
+            """, (student_id, room_id))
 
             self.db.cursor.execute("""
                 UPDATE rooms
@@ -118,13 +66,13 @@ class RoomAllocation:
                     ELSE 0
                 END
                 WHERE roomId = %s
-            """, (roomId,))
+            """, (room_id,))
 
             self.db.cursor.execute("""
                 SELECT occupied, capacity
                 FROM rooms
                 WHERE roomId = %s
-            """, (roomId,))
+            """, (room_id,))
             room = self.db.cursor.fetchone()
 
             if room:
@@ -134,35 +82,39 @@ class RoomAllocation:
                     UPDATE rooms
                     SET roomStatus = %s
                     WHERE roomId = %s
-                """, (status, roomId))
+                """, (status, room_id))
 
             self.db.conn.commit()
-            return "Student Deallocated Successfully"
-
+            return True, "Student deallocated successfully"
         except Exception as e:
             self.db.conn.rollback()
-            print("Deallocation error:", e)
-            return f"Error: {e}"
+            print("Deallocate student error:", e)
+            return False, f"Error: {e}"
 
-    def get_all_allocations(self):
+    def get_students_in_room(self, room_id):
         try:
             self.db.cursor.execute("""
                 SELECT
-                    a.allocationId,
                     s.studentId,
                     s.name,
                     s.registrationNumber,
-                    r.roomId,
-                    r.roomNumber,
-                    r.hostelType,
-                    a.allocationDate,
-                    a.endDate
+                    COALESCE(p.period, 'N/A') AS period,
+                    COALESCE(p.amount, 0) AS amount,
+                    a.endDate,
+                    GREATEST(0, DATE_PART('day', a.endDate - NOW()))::int AS daysLeft
                 FROM allocations a
-                JOIN students s ON a.studentId = s.studentId
-                JOIN rooms r ON a.roomId = r.roomId
-                ORDER BY a.allocationId
-            """)
+                JOIN students s ON s.studentId = a.studentId
+                LEFT JOIN LATERAL (
+                    SELECT period, amount
+                    FROM payments
+                    WHERE studentId = s.studentId
+                    ORDER BY paymentDate DESC
+                    LIMIT 1
+                ) p ON TRUE
+                WHERE a.roomId = %s
+                ORDER BY s.studentId
+            """, (room_id,))
             return self.db.cursor.fetchall()
         except Exception as e:
-            print("Get allocations error:", e)
+            print("Get students in room error:", e)
             return []

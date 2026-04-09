@@ -2,12 +2,12 @@ class Student:
     def __init__(self, db):
         self.db = db
 
-    def register(self, name, phone, regNo, gender):
+    def register(self, name, phone, reg_no, gender):
         try:
             self.db.cursor.execute("""
                 INSERT INTO students(name, phone, registrationNumber, gender)
                 VALUES (%s, %s, %s, %s)
-            """, (name, phone, regNo, gender))
+            """, (name, phone, reg_no, gender))
             self.db.conn.commit()
             return True
         except Exception as e:
@@ -27,12 +27,24 @@ class Student:
             print("Get students error:", e)
             return []
 
-    def delete(self, studentId):
+    def find_by_regno(self, reg_no):
+        try:
+            self.db.cursor.execute("""
+                SELECT studentId, name, gender, registrationNumber
+                FROM students
+                WHERE registrationNumber = %s
+            """, (reg_no,))
+            return self.db.cursor.fetchone()
+        except Exception as e:
+            print("Find student by reg no error:", e)
+            return None
+
+    def delete(self, student_id):
         try:
             self.db.cursor.execute("""
                 DELETE FROM students
                 WHERE studentId = %s
-            """, (studentId,))
+            """, (student_id,))
             self.db.conn.commit()
             return True
         except Exception as e:
