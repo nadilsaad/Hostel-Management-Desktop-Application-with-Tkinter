@@ -5,18 +5,37 @@ class Student:
     def register(self, name, phone, regNo, gender):
         try:
             self.db.cursor.execute("""
-            INSERT INTO students(name, phone, registrationNumber, gender)
-            VALUES (?, ?, ?, ?)
+                INSERT INTO students(name, phone, registrationNumber, gender)
+                VALUES (%s, %s, %s, %s)
             """, (name, phone, regNo, gender))
             self.db.conn.commit()
             return True
-        except:
+        except Exception as e:
+            self.db.conn.rollback()
+            print("Student register error:", e)
             return False
 
     def get_all(self):
-        self.db.cursor.execute("SELECT * FROM students")
-        return self.db.cursor.fetchall()
+        try:
+            self.db.cursor.execute("""
+                SELECT studentId, name, phone, registrationNumber, gender
+                FROM students
+                ORDER BY studentId
+            """)
+            return self.db.cursor.fetchall()
+        except Exception as e:
+            print("Get students error:", e)
+            return []
 
     def delete(self, studentId):
-        self.db.cursor.execute("DELETE FROM students WHERE studentId=?", (studentId,))
-        self.db.conn.commit()
+        try:
+            self.db.cursor.execute("""
+                DELETE FROM students
+                WHERE studentId = %s
+            """, (studentId,))
+            self.db.conn.commit()
+            return True
+        except Exception as e:
+            self.db.conn.rollback()
+            print("Delete student error:", e)
+            return False
