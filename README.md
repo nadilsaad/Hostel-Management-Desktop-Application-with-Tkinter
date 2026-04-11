@@ -1,4 +1,4 @@
-# Hostel Management Desktop Application with Tkinter
+# Hostel Management Desktop Application with Tkinter.
 
 A desktop-based hostel management system developed using **Python** and **Tkinter** to simplify hostel operations such as student registration, room allocation, vacancy tracking, and payment management.
 
